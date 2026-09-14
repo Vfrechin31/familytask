@@ -19,7 +19,7 @@ const rolePermissions = {
     canValidateTasks: true
   },
   user: {
-    canCreateTasks: false,
+    canCreateTasks: true,
     canDeleteTasks: false,
     canManageMembers: false,
     canValidateTasks: true
@@ -64,7 +64,13 @@ const commonTasks = [
   'Faire les lits',
   'Faire la poussière',
   'Faire les courses pour le déjeuner',
-  'Faire une promenade'
+  'Faire une promenade',
+  'Ranger la chambre de Cloé',
+  "Ranger la chambre d'Olivia",
+  'Faire les vitres',
+  'Faire le tri dans les vêtements',
+  'Faire le tri dans les jouets',
+  'Faire le tri dans les livres',
 ]
 
 // Calculer les permissions de l'utilisateur actuel
@@ -210,7 +216,7 @@ const switchUser = (user) => {
         <button @click="currentUser = null" class="logout-btn">Changer d'utilisateur</button>
       </div>
 
-      <h2 class="todo-title">📋 Ma Todo-List</h2>
+      <h2 class="todo-title">📋Tâches à faire</h2>
       
       <!-- Statistiques des tâches effectuées -->
       <div class="stats-container">
