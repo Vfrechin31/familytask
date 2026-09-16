@@ -1,371 +1,145 @@
 <script setup>
-import { ref, computed } from 'vue'
-import TaskList from './components/TaskList.vue'
+import { computed } from 'vue'
+import { useRouter } from 'vue-router'
+import apiFetch from './api.js'
+import { currentMember, clearCurrentMember } from './auth.js'
+import { isDark, toggleTheme } from './theme.js'
+import Avatar from './components/Avatar.vue'
 
-// Définition des utilisateurs et leurs rôles
-const users = ref([
-  { id: 1, name: 'Maman', role: 'admin' },
-  { id: 2, name: 'Papa', role: 'admin' },
-  { id: 3, name: 'Cloé', role: 'user' },
-  { id: 4, name: 'Olivia', role: 'user' }
-])
+const router = useRouter()
 
-// Définition des permissions par rôle
-const rolePermissions = {
-  admin: {
-    canCreateTasks: true,
-    canDeleteTasks: true,
-    canManageMembers: true,
-    canValidateTasks: true
-  },
-  user: {
-    canCreateTasks: true,
-    canDeleteTasks: false,
-    canManageMembers: false,
-    canValidateTasks: true
+// Prénom du membre connecté, dérivé de l'état partagé (currentMember) déjà rempli
+// par le garde de navigation via /api/me — pas besoin de refaire l'appel ici
+const memberName = computed(() => currentMember.value?.name || '')
+
+// Le membre connecté est-il administrateur ? Utilisé pour afficher ou non l'onglet "Famille"
+const isAdmin = computed(() => currentMember.value?.is_admin || false)
+
+// Déconnexion : on tente de prévenir le serveur, mais on déconnecte localement dans tous les cas
+const handleLogout = async () => {
+  try {
+    // On informe le serveur pour qu'il invalide le token côté base de données
+    await apiFetch('/logout', { method: 'POST' })
+  } catch (error) {
+    // Si le serveur est injoignable (panne réseau, backend éteint...), on ne bloque pas l'utilisateur :
+    // mieux vaut le déconnecter localement que le laisser coincé sur l'app
+    console.error('Impossible de joindre le serveur pour la déconnexion', error)
   }
-}
 
-// Utilisateur actuellement connecté
-const currentUser = ref(null)
-
-// Données réactives pour les tâches
-const tasks = ref([
-  { id: 1, title: 'Faire les courses', done: false, completedBy: null },
-])
-
-// Variable pour le nouveau titre de tâche
-const newTask = ref('')
-
-// État du dropdown de suggestions
-const showSuggestions = ref(false)
-
-// Message d'erreur
-const errorMessage = ref('')
-
-// Statistiques persistantes (en mémoire même si tâche supprimée)
-const stats = ref({
-  'Maman': 0,
-  'Papa': 0,
-  'Cloé': 0,
-  'Olivia': 0
-})
-
-// Liste des tâches communes (suggestions)
-const commonTasks = [
-  'Faire les courses',
-  'Faire la vaisselle',
-  'Faire le ménage',
-  'Faire le linge',
-  'Faire les devoirs',
-  'Faire du sport',
-  'Faire un gâteau',
-  'Faire le jardin',
-  'Faire les lits',
-  'Faire la poussière',
-  'Faire les courses pour le déjeuner',
-  'Faire une promenade',
-  'Ranger la chambre de Cloé',
-  "Ranger la chambre d'Olivia",
-  'Faire les vitres',
-  'Faire le tri dans les vêtements',
-  'Faire le tri dans les jouets',
-  'Faire le tri dans les livres',
-]
-
-// Calculer les permissions de l'utilisateur actuel
-const currentUserPermissions = computed(() => {
-  if (!currentUser.value) {
-    return {
-      canCreateTasks: false,
-      canDeleteTasks: false,
-      canManageMembers: false,
-      canValidateTasks: false
-    }
-  }
-  return rolePermissions[currentUser.value.role] || {}
-})
-
-// Calculer les suggestions filtrées en fonction de ce qui est écrit
-const suggestions = computed(() => {
-  // Obtenir les titres des tâches existantes (en minuscules pour comparaison)
-  const existingTitles = tasks.value.map(t => t.title.toLowerCase())
-  
-  // Filtrer les tâches communes en excluant celles déjà dans la liste
-  let filtered = commonTasks.filter(task => !existingTitles.includes(task.toLowerCase()))
-  
-  if (newTask.value.trim() === '') {
-    // Si le champ est vide, afficher les 8 premières suggestions filtrées
-    return filtered.slice(0, 8)
-  }
-  
-  // Sinon, filtrer les suggestions qui commencent par le texte saisi (sans casse)
-  const searchTerm = newTask.value.toLowerCase()
-  return filtered
-    .filter(task => task.toLowerCase().startsWith(searchTerm))
-    .slice(0, 8) // Maximum 8 suggestions
-})
-
-// Fonction pour ajouter une tâche
-const addTask = () => {
-  if (!currentUserPermissions.value.canCreateTasks) return
-  if (newTask.value.trim() === '') return // Ne pas ajouter si vide
-  
-  // Créer une nouvelle tâche avec un ID unique
-  const newId = Math.max(...tasks.value.map(t => t.id), 0) + 1
-  
-  tasks.value.push({
-    id: newId,
-    title: newTask.value,
-    done: false,
-    completedBy: null
-  })
-  
-  // Vider le champ et fermer le dropdown
-  newTask.value = ''
-  showSuggestions.value = false
-}
-
-// Fonction pour sélectionner une suggestion
-const selectSuggestion = (task) => {
-  if (!currentUserPermissions.value.canCreateTasks) return
-  newTask.value = task
-  showSuggestions.value = false
-  // Ajouter automatiquement la tâche
-  addTask()
-}
-
-// Fonction pour changer l'état "done" d'une tâche
-const toggleTask = (id) => {
-  if (!currentUserPermissions.value.canValidateTasks) return
-  const task = tasks.value.find(t => t.id === id)
-  if (task) {
-    task.done = !task.done
-    // Enregistrer qui a effectué la tâche et incrémenter les stats
-    if (task.done) {
-      task.completedBy = currentUser.value.name
-      stats.value[currentUser.value.name]++
-    } else {
-      task.completedBy = null
-      stats.value[currentUser.value.name]--
-    }
-  }
-}
-
-// Calculer les statistiques de tâches effectuées par personne
-const taskStats = computed(() => {
-  return stats.value
-})
-
-// Fonction pour supprimer une tâche
-const deleteTask = (id) => {
-  if (!currentUserPermissions.value.canDeleteTasks) return
-  tasks.value = tasks.value.filter(t => t.id !== id)
-}
-
-// Fonction pour réinitialiser les statistiques
-const resetStats = () => {
-  if (!currentUserPermissions.value.canDeleteTasks) return
-  if (confirm('⚠️ Êtes-vous sûr de vouloir réinitialiser toutes les statistiques ? Les tâches ne seront pas supprimées, juste marquées comme non effectuées.')) {
-    tasks.value.forEach(task => {
-      task.done = false
-      task.completedBy = null
-    })
-    // Réinitialiser les compteurs
-    stats.value['Maman'] = 0
-    stats.value['Papa'] = 0
-    stats.value['Cloé'] = 0
-    stats.value['Olivia'] = 0
-  }
-}
-
-// Fonction pour changer d'utilisateur
-const switchUser = (user) => {
-  currentUser.value = user
-  newTask.value = ''
-  showSuggestions.value = false
+  // Dans tous les cas (succès ou échec de l'appel réseau), on nettoie la session locale
+  clearCurrentMember()
+  router.push('/login')
 }
 </script>
 
 <template>
-  <header><h1>👨‍👩‍👧‍👦 FamilyTask</h1></header>
-  <main>
-    <!-- Sélection d'utilisateur si personne n'est connecté -->
-    <div v-if="!currentUser" class="card user-selection">
-      <h2>👤 Qui es-tu ?</h2>
-      <div class="user-buttons">
-        <button 
-          v-for="user in users" 
-          :key="user.id"
-          @click="switchUser(user)"
-          class="user-btn"
-        >
-          {{ user.name }}
-        </button>
-      </div>
+  <div class="app-frame">
+    <div class="app-screen">
+      <!-- La barre du haut ne s'affiche que si un membre est connecté -->
+      <header v-if="memberName" class="top-bar">
+        <span class="top-bar-user">
+          <Avatar :name="memberName" :size="32" />
+          {{ memberName }}
+        </span>
+        <span class="top-bar-actions">
+          <button
+            @click="toggleTheme"
+            class="theme-toggle-btn"
+            :title="isDark ? 'Passer en mode clair' : 'Passer en mode sombre'"
+          >{{ isDark ? '☀️' : '🌙' }}</button>
+          <button @click="handleLogout" class="logout-btn">Se déconnecter</button>
+        </span>
+      </header>
+
+      <router-view />
+
+      <!-- Barre d'onglets en bas, toujours visible (sticky) tant qu'un membre est connecté -->
+      <nav v-if="memberName" class="tab-bar">
+        <router-link to="/tasks" class="tab-link">📋 Tâches</router-link>
+        <!-- L'onglet Famille n'apparaît que pour les administrateurs -->
+        <router-link v-if="isAdmin" to="/famille" class="tab-link">👪 Famille</router-link>
+      </nav>
     </div>
-
-    <!-- Contenu principal si utilisateur connecté -->
-    <div v-else class="card">
-      <!-- Barre d'utilisateur -->
-      <div class="user-bar">
-        <div class="current-user">
-          👤 Connecté: <strong>{{ currentUser.name }}</strong>
-          <span class="role-badge" :class="currentUser.role">{{ currentUser.role === 'admin' ? '👑 Admin' : '👶 Utilisateur' }}</span>
-        </div>
-        <button @click="currentUser = null" class="logout-btn">Changer d'utilisateur</button>
-      </div>
-
-      <h2 class="todo-title">📋Tâches à faire</h2>
-      
-      <!-- Statistiques des tâches effectuées -->
-      <div class="stats-container">
-        <div class="stats-header">
-          <div class="stats-title">📊 Tâches effectuées</div>
-          <button 
-            v-if="currentUserPermissions.canDeleteTasks"
-            @click="resetStats"
-            class="reset-stats-btn"
-            title="Réinitialiser toutes les statistiques (Admins seulement)"
-          >
-            🔄 Réinitialiser
-          </button>
-        </div>
-        <div class="stats-grid">
-          <div v-for="user in users" :key="user.id" class="stat-card" :class="user.role">
-            <span class="stat-member">{{ user.name }}</span>
-            <span class="stat-count">{{ taskStats[user.name] || 0 }}</span>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Formulaire pour ajouter une tâche avec autocomplétion - visible seulement pour les admins -->
-      <div v-if="currentUserPermissions.canCreateTasks" class="form-container">
-        <!-- Overlay transparent pour fermer le dropdown au clic -->
-        <div v-if="showSuggestions" class="dropdown-overlay" @click="showSuggestions = false"></div>
-        
-        <div class="form-group-wrapper">
-          <div class="form-group">
-            <div class="input-wrapper">
-              <input 
-                v-model="newTask" 
-                type="text" 
-                placeholder="Ajouter une nouvelle tâche..."
-                @keyup.enter="addTask"
-                @focus="showSuggestions = true"
-                @blur="setTimeout(() => showSuggestions = false, 150)"
-              />
-              
-              <!-- Dropdown avec les suggestions -->
-              <div v-if="showSuggestions && suggestions.length > 0" class="suggestions-dropdown" @click.stop>
-                <div 
-                  v-for="suggestion in suggestions" 
-                  :key="suggestion"
-                  class="suggestion-item"
-                  @click="selectSuggestion(suggestion)"
-                >
-                  💡 {{ suggestion }}
-                </div>
-              </div>
-            </div>
-            <button @click="addTask">➕ Ajouter</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Message pour les utilisateurs sans permission -->
-      <div v-else class="no-permission-message">
-        ℹ️ Vous ne pouvez que valider les tâches existantes
-      </div>
-
-      <!-- Composant TaskList pour afficher la liste -->
-      <TaskList 
-        :tasks="tasks" 
-        @toggle="toggleTask"
-        @remove="deleteTask"
-        :can-delete="currentUserPermissions.canDeleteTasks"
-      />
-    </div>
-  </main>
+  </div>
 </template>
 
 <style scoped>
-/* Sélection d'utilisateur */
-.user-selection {
-  text-align: center;
+/* Fond "hors écran" derrière le cadre téléphone, visible uniquement sur grand écran */
+.app-frame {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.user-selection h2 {
-  font-size: 28px;
-  color: #7aa86d;
-  margin-bottom: 32px;
+.app-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg-page);
+  -webkit-overflow-scrolling: touch;
 }
 
-.user-buttons {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 16px;
+/* Sur grand écran, on simule un vrai téléphone : cadre fixe, coins arrondis, ombre marquée */
+@media (min-width: 700px) and (min-height: 700px) {
+  .app-screen {
+    width: 430px;
+    height: 900px;
+    max-height: 92vh;
+    border-radius: 44px;
+    border: 10px solid #1c1c1f;
+    box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5), 0 10px 24px rgba(0, 0, 0, 0.3);
+  }
 }
 
-.user-btn {
-  padding: 16px 24px;
-  background: linear-gradient(135deg, #7aa86d 0%, #6b8e71 100%);
-  color: white;
-  border: none;
-  border-radius: 12px;
-  font-size: 18px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 10px rgba(122, 168, 109, 0.3);
-}
-
-.user-btn:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 20px rgba(122, 168, 109, 0.4);
-}
-
-.user-btn:active {
-  transform: translateY(-2px);
-}
-
-/* Barre d'utilisateur */
-.user-bar {
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px;
+  padding: 12px 20px;
   background: rgba(122, 168, 109, 0.1);
-  border-radius: 10px;
-  margin-bottom: 24px;
-  flex-wrap: wrap;
-  gap: 12px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(31, 41, 55, 0.08);
 }
 
-.current-user {
+.top-bar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 14px;
-  color: #2d5a2d;
   font-weight: 600;
+  color: var(--text-dark, #1f2937);
 }
 
-.role-badge {
-  margin-left: 12px;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-  background: #e8f5e9;
-  color: #2d5a2d;
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.role-badge.admin {
-  background: #fff3cd;
-  color: #856404;
+.theme-toggle-btn {
+  padding: 6px 10px;
+  background: var(--bg-white, #ffffff);
+  border-radius: 12px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: var(--btn-shadow);
 }
 
-.role-badge.user {
-  background: #cfe9f3;
-  color: #0c5460;
+.theme-toggle-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--btn-shadow-hover);
+}
+
+.theme-toggle-btn:active {
+  transform: translateY(1px);
+  box-shadow: var(--btn-shadow-active);
 }
 
 .logout-btn {
@@ -373,274 +147,51 @@ const switchUser = (user) => {
   background: linear-gradient(135deg, #7aa86d 0%, #6b8e71 100%);
   color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 12px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 10px rgba(122, 168, 109, 0.3);
+  transition: all 0.2s ease;
+  box-shadow: var(--btn-shadow);
 }
 
 .logout-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 15px rgba(122, 168, 109, 0.4);
+  transform: translateY(-3px);
+  box-shadow: var(--btn-shadow-hover);
 }
 
-.no-permission-message {
-  padding: 16px;
-  background: #cfe9f3;
-  border-left: 4px solid #0c5460;
-  border-radius: 8px;
-  margin-bottom: 24px;
-  color: #0c5460;
-  font-weight: 600;
+.logout-btn:active {
+  transform: translateY(1px);
+  box-shadow: var(--btn-shadow-active);
 }
 
-.todo-title {
-  font-size: 28px;
-  font-weight: 800;
-  text-align: center;
-  margin: 0 0 24px;
-  color: #7aa86d;
-  letter-spacing: 0.5px;
-}
-
-/* Statistiques */
-.stats-container {
-  background: rgba(122, 168, 109, 0.05);
-  border: 2px solid rgba(122, 168, 109, 0.2);
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 24px;
-}
-
-.stats-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.stats-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: #7aa86d;
-  margin: 0;
-}
-
-.reset-stats-btn {
-  padding: 8px 16px;
-  background: linear-gradient(135deg, #7aa86d 0%, #6b8e71 100%);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 10px rgba(122, 168, 109, 0.3);
-  white-space: nowrap;
-}
-
-.reset-stats-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 15px rgba(122, 168, 109, 0.4);
-}
-
-.reset-stats-btn:active {
-  transform: translateY(0);
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 12px;
-}
-
-.stat-card {
-  background: white;
-  border: 2px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 16px;
-  text-align: center;
-  transition: all 0.3s ease;
-}
-
-.stat-card:hover {
-  border-color: #7aa86d;
-  box-shadow: 0 2px 8px rgba(122, 168, 109, 0.15);
-}
-
-.stat-card.admin {
-  border-color: #ffc107;
-  background: rgba(255, 193, 7, 0.05);
-}
-
-.stat-card.user {
-  border-color: #2196f3;
-  background: rgba(33, 150, 243, 0.05);
-}
-
-.stat-member {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: #6b7280;
-  margin-bottom: 8px;
-}
-
-.stat-count {
-  display: block;
-  font-size: 28px;
-  font-weight: 800;
-  color: #7aa86d;
-}
-
-.form-group-wrapper {
-  position: relative;
-  margin-bottom: 24px;
-}
-
-.form-group {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.input-wrapper {
-  flex: 1;
-  position: relative;
-}
-
-.form-group input {
-  width: 100%;
-  padding: 12px 16px;
-  border: 2px solid #e5e7eb;
-  border-radius: 10px;
-  font-size: 14px;
-  transition: all 0.3s ease;
-  background: var(--bg-white, #ffffff);
-  color: var(--text-dark, #1f2937);
-}
-
-.form-group input:focus {
-  outline: none;
-  border-color: #7aa86d;
-  box-shadow: 0 0 10px rgba(122, 168, 109, 0.2);
-}
-
-.form-group button {
-  padding: 12px 20px;
-  background: linear-gradient(135deg, #7aa86d 0%, #6b8e71 100%);
-  color: white;
-  border: none;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 10px rgba(122, 168, 109, 0.3);
-  white-space: nowrap;
-}
-
-.form-group button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 15px rgba(122, 168, 109, 0.4);
-}
-
-.form-group button:active {
-  transform: translateY(0);
-}
-
-/* Dropdown des suggestions */
-.suggestions-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: var(--bg-white, #ffffff);
-  border: 2px solid #7aa86d;
-  border-top: none;
-  border-radius: 0 0 10px 10px;
-  max-height: 300px;
-  overflow-y: auto;
-  z-index: 10;
-  box-shadow: 0 6px 15px rgba(122, 168, 109, 0.2);
-  animation: slideDown 0.2s ease;
-}
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.suggestion-item {
-  padding: 12px 16px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border-bottom: 1px solid #f0f0f0;
-  font-size: 14px;
-  color: var(--text-dark, #1f2937);
-}
-
-.suggestion-item:hover {
-  background-color: rgba(122, 168, 109, 0.1);
-  padding-left: 20px;
-}
-
-.suggestion-item:last-child {
-  border-bottom: none;
-  border-radius: 0 0 8px 8px;
-}
-
-/* Overlay pour fermer le dropdown */
-.form-container {
-  position: relative;
-  margin-bottom: 24px;
-}
-
-.dropdown-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+.tab-bar {
+  position: sticky;
   bottom: 0;
-  z-index: 9;
-  cursor: pointer;
-  pointer-events: auto;
-  background: transparent;
+  z-index: 5;
+  display: flex;
+  background: var(--bg-white, #ffffff);
+  box-shadow: 0 -10px 26px rgba(31, 41, 55, 0.16), 0 -2px 6px rgba(122, 168, 109, 0.15);
+  padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
-/* Message d'erreur pour les doublons */
-.error-message {
-  display: none; /* Désactivé */
-  padding: 12px 16px;
-  background: #fee2e2;
-  border-left: 4px solid #dc2626;
-  border-radius: 8px;
-  margin-top: 12px;
-  color: #7f1d1d;
+.tab-link {
+  flex: 1;
+  text-align: center;
+  padding: 14px 8px;
+  font-size: 13px;
   font-weight: 600;
-  font-size: 14px;
-  animation: slideIn 0.3s ease;
+  color: var(--text-muted, #6b7280);
+  text-decoration: none;
+  transition: color 0.2s ease;
 }
 
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.tab-link:hover {
+  color: #6b8e71;
+}
+
+/* vue-router ajoute automatiquement cette classe au lien actif */
+.tab-link.router-link-active {
+  color: #7aa86d;
 }
 </style>

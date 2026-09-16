@@ -81,12 +81,14 @@ const handleRemove = (id) => {
   margin-bottom: 10px;
   transition: all 0.3s ease;
   border: 1px solid rgba(139, 92, 246, 0.1);
+  box-shadow: 0 4px 12px rgba(31, 41, 55, 0.08);
 }
 
 .task-item:hover {
   background-color: var(--bg-light, #f8f7ff);
   border-color: rgba(139, 92, 246, 0.3);
-  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.1);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(139, 92, 246, 0.18);
 }
 
 .task-item span {
