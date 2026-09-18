@@ -1,8 +1,9 @@
-// Adresse du back-end, injectée au build via VITE_API_URL. Render fournit uniquement le nom
-// d'hôte (propriété "host", sans schéma) : on préfixe nous-mêmes en https:// pour obtenir une URL absolue.
+// Adresse du back-end, injectée au build via VITE_API_URL. La propriété "host" de Render ne
+// donne que le label court du service (ex. familytask-api-nzx3), sans schéma ni suffixe de domaine :
+// on reconstitue nous-mêmes l'URL complète en https://<label>.onrender.com
 // Chaîne vide par défaut : en local, le préfixe relatif /api suffit, le dev server Vite le proxy vers le conteneur backend
 const apiHost = import.meta.env.VITE_API_URL
-const BASE_URL = apiHost ? `https://${apiHost}/api` : '/api'
+const BASE_URL = apiHost ? `https://${apiHost}.onrender.com/api` : '/api'
 
 // Fonction centralisée pour tous les appels à l'API : ajoute automatiquement le token si présent
 async function apiFetch(endpoint, options = {}) {
