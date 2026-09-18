@@ -2,6 +2,7 @@ vue
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import apiFetch from '../api.js'
 
 const router = useRouter()
 
@@ -13,9 +14,8 @@ const handleLogin = async () => {
   errorMessage.value = ''
 
   try {
-    const response = await fetch('/api/login', {
+    const response = await apiFetch('/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: email.value, password: password.value })
     })
 

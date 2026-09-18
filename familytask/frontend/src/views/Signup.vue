@@ -2,6 +2,7 @@ vue
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import apiFetch from '../api.js'
 
 const router = useRouter()
 
@@ -20,9 +21,8 @@ const handleSignup = async () => {
   errorMessage.value = ''
 
   try {
-    const response = await fetch('/api/signup', {
+    const response = await apiFetch('/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         family: family.value,
         name: name.value,
@@ -39,9 +39,8 @@ const handleSignup = async () => {
 
     // Le signup renvoie le membre créé, mais pas de token directement dans ta route actuelle.
     // On enchaîne donc automatiquement avec un login pour récupérer le token.
-    const loginResponse = await fetch('/api/login', {
+    const loginResponse = await apiFetch('/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: email.value, password: password.value })
     })
 
