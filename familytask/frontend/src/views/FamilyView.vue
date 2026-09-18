@@ -27,6 +27,25 @@ const newMemberIsAdmin = ref(false)
 // Champ du petit formulaire d'ajout d'un lien de parenté
 const newLienNom = ref('')
 
+// Texte affiché sur le bouton de copie du code famille ("Copier" -> "Copié !" temporairement)
+const copyLabel = ref('Copier le lien')
+
+// Lien d'invitation complet, à partager par n'importe quel canal (SMS, WhatsApp...) :
+// ouvre directement le formulaire /join avec le code pré-rempli
+const inviteLink = () => `${window.location.origin}/join?code=${currentMember.value?.family_code}`
+
+// Copie le lien d'invitation dans le presse-papiers, avec un petit retour visuel
+const copyInviteLink = async () => {
+  try {
+    await navigator.clipboard.writeText(inviteLink())
+    copyLabel.value = 'Copié !'
+    setTimeout(() => { copyLabel.value = 'Copier le lien' }, 2000)
+  } catch (error) {
+    console.error(error)
+    errorMessage.value = 'Impossible de copier le lien, copie-le manuellement.'
+  }
+}
+
 // Récupère la liste des membres de la famille (moi compris)
 const fetchMembers = async () => {
   try {
@@ -199,6 +218,17 @@ onMounted(async () => {
   <main>
     <div v-if="errorMessage" class="card error-message">⚠️ {{ errorMessage }}</div>
 
+    <!-- Code d'invitation : à partager pour que quelqu'un rejoigne la famille lui-même,
+         sans que l'admin ait à créer son compte à sa place -->
+    <div class="card">
+      <h2>🔗 Inviter un membre</h2>
+      <p class="hint">Partage ce code ou ce lien : la personne pourra créer elle-même son compte et choisir son mot de passe.</p>
+      <div class="invite-row">
+        <span class="invite-code">{{ currentMember?.family_code }}</span>
+        <button class="invite-copy-btn" @click="copyInviteLink">{{ copyLabel }}</button>
+      </div>
+    </div>
+
     <!-- Liste des membres -->
     <div class="card">
       <h2>👤 Membres</h2>
@@ -313,6 +343,47 @@ header {
 
 .back-btn:hover {
   background: rgba(255, 255, 255, 0.5);
+}
+
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.invite-code {
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(122, 168, 109, 0.15);
+  color: #2d5a2d;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.invite-copy-btn {
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #7aa86d 0%, #6b8e71 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--btn-shadow);
+  transition: all 0.2s ease;
+}
+
+.invite-copy-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--btn-shadow-hover);
+}
+
+.invite-copy-btn:active {
+  transform: translateY(1px);
+  box-shadow: var(--btn-shadow-active);
 }
 
 .member-list,

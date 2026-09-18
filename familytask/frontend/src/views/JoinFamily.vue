@@ -1,30 +1,37 @@
-vue
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import apiFetch from '../api.js'
 
 const router = useRouter()
+const route = useRoute()
 
-// Champs du formulaire d'inscription
-const family = ref('')
+// Champs du formulaire pour rejoindre une famille existante
+const familyCode = ref('')
 const name = ref('')
 const lien = ref('')
 const email = ref('')
 const password = ref('')
 
-// Message d'erreur affiché si l'inscription échoue
+// Message d'erreur affiché si la tentative échoue
 const errorMessage = ref('')
 
+// Pré-remplit le code famille si présent dans le lien partagé (ex. /join?code=3F9A2C)
+onMounted(() => {
+  if (route.query.code) {
+    familyCode.value = String(route.query.code).toUpperCase()
+  }
+})
+
 // Fonction appelée à la soumission du formulaire
-const handleSignup = async () => {
+const handleJoin = async () => {
   errorMessage.value = ''
 
   try {
-    const response = await apiFetch('/signup', {
+    const response = await apiFetch('/join', {
       method: 'POST',
       body: JSON.stringify({
-        family: family.value,
+        family_code: familyCode.value,
         name: name.value,
         lien: lien.value,
         email: email.value,
@@ -37,17 +44,17 @@ const handleSignup = async () => {
       throw new Error(data.detail || "Erreur lors de l'inscription")
     }
 
-    // Le signup renvoie le membre créé, mais pas de token directement dans ta route actuelle.
-    // On enchaîne donc automatiquement avec un login pour récupérer le token.
+    // Même principe que Signup.vue : /api/join ne renvoie pas de token directement,
+    // on enchaîne donc avec un login pour en récupérer un
     const loginResponse = await apiFetch('/login', {
       method: 'POST',
       body: JSON.stringify({ email: email.value, password: password.value })
     })
 
     const loginData = await loginResponse.json()
-    localStorage.setItem('token', loginData.token) // Stockage du token pour les prochaines requêtes
+    localStorage.setItem('token', loginData.token)
 
-    router.push('/tasks') // Redirection vers l'écran des tâches
+    router.push('/tasks')
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -57,24 +64,23 @@ const handleSignup = async () => {
 <template>
   <div class="auth-page">
     <div class="auth-container">
-      <div class="auth-logo">👨‍👩‍👧‍👦</div>
-      <h1>Créer ma famille</h1>
-      <p class="auth-subtitle">Quelques infos pour démarrer</p>
+      <div class="auth-logo">🔗</div>
+      <h1>Rejoindre une famille</h1>
+      <p class="auth-subtitle">Entre le code transmis par un membre de ta famille</p>
 
-      <form @submit.prevent="handleSignup" class="auth-form">
-        <input v-model="family" type="text" placeholder="Nom de famille" required />
+      <form @submit.prevent="handleJoin" class="auth-form">
+        <input v-model="familyCode" type="text" placeholder="Code famille (ex. 3F9A2C)" required />
         <input v-model="name" type="text" placeholder="Prénom" required />
-        <input v-model="lien" type="text" placeholder="Lien de parenté (ex. Maman, Papa)" required />
+        <input v-model="lien" type="text" placeholder="Lien de parenté (ex. Fille, Fils)" required />
         <input v-model="email" type="email" placeholder="Email" required />
         <input v-model="password" type="password" placeholder="Mot de passe" required />
 
         <div v-if="errorMessage" class="error-message">⚠️ {{ errorMessage }}</div>
 
-        <button type="submit">Créer ma famille</button>
+        <button type="submit">Rejoindre la famille</button>
       </form>
 
-      <router-link to="/login" class="auth-link">Déjà un compte ? Se connecter</router-link>
-      <router-link to="/join" class="auth-link">On t'a transmis un code de famille ? Rejoindre</router-link>
+      <router-link to="/signup" class="auth-link">Créer une nouvelle famille à la place</router-link>
     </div>
   </div>
 </template>

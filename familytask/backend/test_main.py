@@ -136,3 +136,73 @@ def test_non_admin_ne_peut_pas_supprimer_la_tache_dun_autre_membre(client):
 
     delete_response = client.delete(f"/api/tasks/{task['id']}", headers=enfant_headers)
     assert delete_response.status_code == 403
+
+
+def _creer_membre(client, email, password="motdepasse123", name="Membre", family="Famille", lien="Parent"):
+    client.post(
+        "/api/signup",
+        json={"email": email, "password": password, "name": name, "family": family, "lien": lien},
+    )
+    token = client.post("/api/login", json={"email": email, "password": password}).json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_impossible_de_voir_une_tache_dune_autre_famille(client):
+    headers_a = _creer_membre(client, "famillea@example.com", family="Famille A")
+    headers_b = _creer_membre(client, "familleb@example.com", family="Famille B")
+
+    task = client.post("/api/tasks", json={"title": "Tâche famille A"}, headers=headers_a).json()
+
+    get_response = client.get(f"/api/tasks/{task['id']}", headers=headers_b)
+    assert get_response.status_code == 404
+
+    update_response = client.put(f"/api/tasks/{task['id']}", json={"done": True}, headers=headers_b)
+    assert update_response.status_code == 404
+
+    toggle_response = client.patch(f"/api/tasks/{task['id']}", headers=headers_b)
+    assert toggle_response.status_code == 404
+
+
+def test_join_permet_de_rejoindre_une_famille_existante(client):
+    admin_headers = _creer_membre(client, "admin2@example.com", family="Famille Join")
+    family_code = client.get("/api/me", headers=admin_headers).json()["family_code"]
+
+    join_response = client.post(
+        "/api/join",
+        json={
+            "email": "invite@example.com",
+            "password": "motdepasse123",
+            "name": "Invite",
+            "lien": "Fille",
+            "family_code": family_code,
+        },
+    )
+    assert join_response.status_code == 201
+    data = join_response.json()
+    assert data["family_code"] == family_code
+    assert data["is_admin"] is False
+
+    login_response = client.post("/api/login", json={"email": "invite@example.com", "password": "motdepasse123"})
+    assert login_response.status_code == 200
+    invite_headers = {"Authorization": f"Bearer {login_response.json()['token']}"}
+
+    members = client.get("/api/members", headers=admin_headers).json()
+    names = [m["name"] for m in members]
+    assert "Invite" in names
+
+    # Le nouveau membre voit bien la même famille que l'admin, pas une nouvelle
+    assert client.get("/api/me", headers=invite_headers).json()["family_code"] == family_code
+
+
+def test_join_avec_code_inconnu_echoue(client):
+    response = client.post(
+        "/api/join",
+        json={
+            "email": "personne@example.com",
+            "password": "motdepasse123",
+            "name": "Personne",
+            "lien": "Tonton",
+            "family_code": "000000",
+        },
+    )
+    assert response.status_code == 404

@@ -89,6 +89,15 @@ class SignupRequest(SQLModel):
     lien: str
 
 
+# Modèle représentant les données envoyées pour rejoindre une famille existante via son code
+class JoinRequest(SQLModel):
+    email: str
+    password: str
+    name: str
+    lien: str
+    family_code: str  # Code de la famille à rejoindre, communiqué par un membre déjà inscrit
+
+
 # Modèle représentant les données envoyées lors de la connexion
 class LoginRequest(SQLModel):
     email: str
@@ -204,10 +213,11 @@ def list_family_tasks(current_member: Member = Depends(get_current_member), sess
 
 
 # GET /api/tasks/{task_id} : renvoie une tâche précise par son id, ou 404 si elle n'existe pas
+# (ou si elle appartient à une autre famille, pour ne jamais laisser fuiter les tâches entre familles)
 @app.get("/api/tasks/{task_id}", response_model=Task)
-def get_task(task_id: int, session: Session = Depends(get_session)):
+def get_task(task_id: int, current_member: Member = Depends(get_current_member), session: Session = Depends(get_session)):
     task = session.get(Task, task_id)
-    if not task:
+    if not task or task.family_code != current_member.family_code:
         raise HTTPException(status_code=404, detail="Tâche introuvable")
     return task
 
@@ -248,10 +258,11 @@ def create_task(
 
 
 # PUT /api/tasks/{task_id} : met à jour une tâche existante (partiellement) ou renvoie 404
+# (ou si elle appartient à une autre famille, pour ne jamais laisser fuiter les tâches entre familles)
 @app.put("/api/tasks/{task_id}", response_model=Task)
-def update_task(task_id: int, task_update: TaskUpdate, session: Session = Depends(get_session)):
+def update_task(task_id: int, task_update: TaskUpdate, current_member: Member = Depends(get_current_member), session: Session = Depends(get_session)):
     task = session.get(Task, task_id)
-    if not task:
+    if not task or task.family_code != current_member.family_code:
         raise HTTPException(status_code=404, detail="Tâche introuvable")
 
     # On ne met à jour que les champs réellement envoyés par le client
@@ -291,12 +302,12 @@ def delete_task(id: int, current_member: Member = Depends(get_current_member), s
 
 # PATCH /api/tasks/{id} : inverse l'état "done" d'une tâche existante (true -> false, false -> true)
 @app.patch("/api/tasks/{id}", response_model=Task)
-def toggle_task(id: int, session: Session = Depends(get_session)):
+def toggle_task(id: int, current_member: Member = Depends(get_current_member), session: Session = Depends(get_session)):
     # Recherche de la tâche par sa clé primaire
     task = session.get(Task, id)
 
-    # Si aucune tâche ne correspond à cet id, on renvoie une erreur 404
-    if not task:
+    # Si aucune tâche ne correspond à cet id, ou qu'elle appartient à une autre famille, on renvoie une erreur 404
+    if not task or task.family_code != current_member.family_code:
         raise HTTPException(status_code=404, detail="Tâche introuvable")
 
     # On inverse simplement la valeur booléenne actuelle
@@ -341,6 +352,43 @@ def signup(data: SignupRequest, session: Session = Depends(get_session)):
     session.refresh(member)
 
     return member  # response_model=MemberPublic filtre automatiquement password_hash et token
+
+
+# POST /api/join : crée un compte et rejoint une famille existante via son family_code
+# (contrairement à /api/members, ne nécessite pas d'être déjà connecté en tant qu'admin :
+# c'est la personne invitée qui crée elle-même son compte et choisit son propre mot de passe)
+@app.post("/api/join", response_model=MemberPublic, status_code=201)
+def join_family(data: JoinRequest, session: Session = Depends(get_session)):
+    # Le code doit correspondre à une famille existante (au moins un membre déjà inscrit avec ce code)
+    famille_existante = session.exec(select(Member).where(Member.family_code == data.family_code)).first()
+    if not famille_existante:
+        raise HTTPException(status_code=404, detail="Aucune famille ne correspond à ce code")
+
+    # On vérifie qu'aucun membre n'existe déjà avec cet email, pour éviter les doublons de compte
+    existing = session.exec(select(Member).where(Member.email == data.email)).first()
+    if existing:
+        raise HTTPException(status_code=422, detail="Un compte existe déjà avec cet email")
+
+    # Génération d'un token d'authentification aléatoire et sécurisé
+    token = secrets.token_hex(32)
+
+    # Création du membre : rejoint la famille existante, jamais admin par ce chemin
+    member = Member(
+        email=data.email,
+        name=data.name,
+        lien=data.lien,
+        is_admin=False,
+        family_code=data.family_code,
+        password_hash=hash_password(data.password),  # On ne stocke jamais le mot de passe en clair
+        token=token
+    )
+
+    session.add(member)
+    session.commit()
+    session.refresh(member)
+
+    return member  # response_model=MemberPublic filtre automatiquement password_hash et token
+
 
 # GET /api/members : renvoie tous les membres de la même famille que le membre connecté,
 # moi compris (le membre connecté n'est volontairement pas exclu de la liste)

@@ -51,6 +51,7 @@ const handleLogin = async () => {
       </form>
 
       <router-link to="/signup" class="auth-link">Pas encore de compte ? Créer ma famille</router-link>
+      <router-link to="/join" class="auth-link">On t'a transmis un code ? Rejoindre une famille</router-link>
     </div>
   </div>
 </template>
