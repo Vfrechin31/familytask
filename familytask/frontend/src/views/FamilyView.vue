@@ -141,6 +141,21 @@ const addLien = async () => {
   }
 }
 
+// Supprime une tâche de n'importe quel membre de la famille (réservé aux admins côté API) :
+// permet à un admin de corriger une erreur d'attribution/création de tâche
+const deleteFamilyTask = async (task) => {
+  if (!confirm(`Supprimer la tâche "${task.title}" ?`)) return
+
+  try {
+    const response = await apiFetch(`/tasks/${task.id}`, { method: 'DELETE' })
+    if (!response.ok) throw new Error('Erreur lors de la suppression de la tâche')
+    await fetchFamilyTasks()
+  } catch (error) {
+    console.error(error)
+    errorMessage.value = 'Impossible de supprimer cette tâche.'
+  }
+}
+
 // Supprime un lien de parenté qui n'est plus nécessaire
 const deleteLien = async (lien) => {
   if (!confirm(`Supprimer le lien "${lien.nom}" ?`)) return
@@ -257,8 +272,17 @@ onMounted(async () => {
       <h2>📋 Tâches de la famille</h2>
       <ul class="family-task-list">
         <li v-for="task in familyTasks" :key="task.id" class="family-task-item">
-          <span :class="{ done: task.done }">{{ task.title }}</span>
-          <span class="family-task-assignee">{{ getMemberName(task.member_id) }}</span>
+          <div class="family-task-info">
+            <span :class="{ done: task.done }">{{ task.title }}</span>
+            <span class="family-task-assignee">{{ getMemberName(task.member_id) }}</span>
+          </div>
+          <button
+            class="delete-btn"
+            title="Supprimer cette tâche"
+            @click="deleteFamilyTask(task)"
+          >
+            ✕
+          </button>
         </li>
       </ul>
       <p v-if="familyTasks.length === 0" class="empty-message">Aucune tâche pour le moment.</p>
@@ -452,6 +476,13 @@ header {
 .family-task-item span.done {
   text-decoration: line-through;
   color: var(--text-muted, #6b7280);
+}
+
+.family-task-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .family-task-assignee {

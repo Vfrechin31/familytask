@@ -1,4 +1,6 @@
-const BASE_URL = '/api'
+// Adresse du back-end, injectée au build via VITE_API_URL (ex. https://api.exemple.com)
+// Chaîne vide par défaut : en local, le préfixe relatif /api suffit, le dev server Vite le proxy vers le conteneur backend
+const BASE_URL = `${import.meta.env.VITE_API_URL || ''}/api`
 
 // Fonction centralisée pour tous les appels à l'API : ajoute automatiquement le token si présent
 async function apiFetch(endpoint, options = {}) {

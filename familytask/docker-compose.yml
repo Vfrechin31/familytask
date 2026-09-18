@@ -22,11 +22,13 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://familytask:familytask@db:5432/familytask
-      # Clé de l'IA. Vient du secret Codespaces (ou du fichier .env en local).
-      # Sans elle, l'app marche : seul l'assistant IA répond qu'il n'est pas prêt.
-      AI_TOKEN: ${AI_TOKEN:-}
+      OLLAMA_URL: http://ollama:11434/v1/chat/completions
+      # qwen2.5:1.5b : le plus gros modèle qui tienne sans planter dans la RAM limitée de cet
+      # environnement de dev (les modèles 3B font crasher le serveur d'inférence par manque de mémoire)
+      OLLAMA_MODEL: qwen2.5:1.5b
     depends_on:
       - db
+      - ollama
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
@@ -38,12 +40,20 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    # Pas de port publié vers l'hôte : seul le backend y accède, via le réseau interne docker compose
+
 # ---------------------------------------------------------------------------
-# Il n'y a plus de conteneur « ai ». L'IA de l'application est appelée en ligne
-# via GitHub Models : rien à télécharger, réponse en 1 s au lieu de 30 s, et
-# l'assistant fonctionne aussi une fois l'app déployée (ce qui n'était pas le
-# cas avec Ollama sur le plan gratuit de Render).
+# GitHub Models (utilisé initialement pour l'assistant IA) a été définitivement
+# retiré le 30 juillet 2026. L'assistant tourne désormais sur un modèle local
+# via Ollama, gratuit et sans clé. Revers de la médaille : plus lent (CPU) et
+# le conteneur ollama doit être présent au déploiement (ce qui avait justifié
+# GitHub Models à l'origine, sur le plan gratuit de Render notamment).
 # ---------------------------------------------------------------------------
 
 volumes:
   pgdata:
+  ollama_data:

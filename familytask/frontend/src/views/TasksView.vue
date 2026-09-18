@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import TaskList from '../components/TaskList.vue'
+import ChatAssistant from '../components/ChatAssistant.vue'
 import apiFetch from '../api.js'
 import Avatar from '../components/Avatar.vue'
 
@@ -298,7 +299,7 @@ const resetStats = () => {
                 placeholder="Ajouter une nouvelle tâche..."
                 @keyup.enter="addTask"
                 @focus="showSuggestions = true"
-                @blur="setTimeout(() => showSuggestions = false, 150)"
+                @blur="window.setTimeout(() => showSuggestions = false, 150)"
               />
 
               <!-- Dropdown avec les suggestions -->
@@ -322,6 +323,9 @@ const resetStats = () => {
       <div v-else class="no-permission-message">
         ℹ️ Vous ne pouvez que valider les tâches existantes
       </div>
+
+      <!-- Assistant IA : juste en dessous de la barre d'ajout manuel de tâches -->
+      <ChatAssistant @refresh-tasks="fetchTasks" />
 
       <!-- Composant TaskList pour afficher la liste -->
       <TaskList

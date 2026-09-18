@@ -8,6 +8,7 @@ import { fetchCurrentMember } from '../auth.js'
 const routes = [
   { path: '/signup', name: 'signup', component: Signup },
   { path: '/login', name: 'login', component: Login },
+  // L'assistant IA est intégré directement dans TasksView (composant ChatAssistant), pas de route dédiée
   { path: '/tasks', name: 'tasks', component: TasksView, meta: { requiresAuth: true } },
   // La vérification "admin uniquement" se fait dans FamilyView elle-même (redirection si non-admin),
   // car cette info n'est pas connue du routeur sans appeler l'API /api/me

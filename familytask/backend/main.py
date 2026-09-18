@@ -1,8 +1,11 @@
 import os
+import re  # Pour repérer un mot de lien (ex. "fille") dans le message brut, sans dépendre du modèle IA
+import json  # Pour décoder les arguments des tool_calls, envoyés par le modèle sous forme de chaîne JSON
 import hashlib  # Module standard Python pour générer des empreintes (hash) de données
 import secrets  # Module standard Python pour générer des chaînes aléatoires sécurisées (codes, tokens)
 from typing import Optional
 
+import httpx
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -263,14 +266,21 @@ def update_task(task_id: int, task_update: TaskUpdate, session: Session = Depend
 
 
 # DELETE /api/tasks/{id} : supprime une tâche existante et renvoie un message de confirmation
+# Autorisé pour le propriétaire de la tâche, ou pour un admin de la même famille (peut supprimer
+# les tâches des autres membres)
 @app.delete("/api/tasks/{id}")
-def delete_task(id: int, session: Session = Depends(get_session)):
+def delete_task(id: int, current_member: Member = Depends(get_current_member), session: Session = Depends(get_session)):
     # Recherche de la tâche par sa clé primaire
     task = session.get(Task, id)
 
     # Si aucune tâche ne correspond à cet id, on renvoie une erreur 404
     if not task:
         raise HTTPException(status_code=404, detail="Tâche introuvable")
+
+    # Seul le propriétaire de la tâche, ou un admin de la même famille, peut la supprimer
+    if task.member_id != current_member.id:
+        if not current_member.is_admin or task.family_code != current_member.family_code:
+            raise HTTPException(status_code=403, detail="Vous ne pouvez supprimer que vos propres tâches")
 
     session.delete(task)  # On marque la tâche pour suppression
     session.commit()      # On valide la transaction (suppression réelle en base)
@@ -481,3 +491,308 @@ def delete_lien(id: int, current_member: Member = Depends(get_current_member), s
     session.commit()
 
     return {"message": f"Lien {id} supprimé avec succès"}
+
+
+# --- Route Assistant IA ---
+
+# GitHub Models (fournisseur utilisé initialement) a été définitivement retiré le 30 juillet 2026.
+# L'assistant tourne désormais sur un modèle local via Ollama (conteneur "ollama"), gratuit et
+# sans clé, avec une API compatible OpenAI (même format de requête/réponse). qwen2.5:1.5b est le
+# plus gros modèle qui tienne de façon stable dans la RAM limitée de cet environnement de dev
+# (les 3B, ex. llama3.2/qwen2.5:3b, font planter le serveur d'inférence par manque de mémoire).
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/v1/chat/completions")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
+
+# Message système : cadre le comportement du modèle, ce qui améliore nettement la fiabilité du
+# tool-calling sur un petit modèle local (sans lui, il répond parfois en texte au lieu d'appeler l'outil).
+# Cadre aussi explicitement le périmètre : c'est ce qui permet un refus propre plutôt qu'une
+# hallucination si on lui demande une action hors de portée (créer un profil, un lien de parenté...).
+ASSISTANT_SYSTEM_PROMPT = (
+    "Tu es l'assistant de l'application familiale FamilyTask. Tu peux UNIQUEMENT : "
+    "1) ajouter une nouvelle tâche pour quelqu'un (outil ajouter_tache), "
+    "2) cocher une tâche existante comme faite/terminée (outil cocher_tache), "
+    "3) supprimer définitivement une tâche existante (outil supprimer_tache). "
+    "Si le message demande une de ces trois actions, appelle TOUJOURS l'outil correspondant avec "
+    "les bons arguments, ne réponds jamais en texte dans ce cas. Ne confonds jamais cocher "
+    "(la tâche est faite mais reste dans la liste) et supprimer (la tâche disparaît définitivement) : "
+    "utilise cocher_tache seulement si l'utilisateur dit qu'une tâche est faite/terminée, et "
+    "supprimer_tache seulement s'il demande explicitement de supprimer/enlever/effacer une tâche. "
+    "Ne mets un prénom dans le champ personne QUE si l'utilisateur en a cité un explicitement : "
+    "ne devine et n'invente jamais de prénom. "
+    "Attention : 'ajouter' ne veut pas toujours dire ajouter une TÂCHE. Si le message parle d'ajouter "
+    "un lien de parenté (ex. 'ajoute un lien Tonton'), un profil, un compte ou un membre, ce n'est "
+    "PAS ajouter_tache : n'appelle aucun outil dans ce cas. "
+    "Pour toute autre demande d'action (créer un profil ou un compte, ajouter un lien de parenté, "
+    "ou n'importe quelle autre action que tu ne peux pas faire), explique gentiment et clairement en "
+    "une phrase que tu n'es pas capable de faire ça, sans jamais prétendre l'avoir fait. "
+    "Pour une question ou un message général, réponds normalement et brièvement en français."
+)
+
+# Description des outils au format function-calling OpenAI, transmis au modèle via le champ "tools"
+ASSISTANT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ajouter_tache",
+            "description": (
+                "Ajoute une nouvelle tâche à faire pour un membre de la famille. À utiliser dès que "
+                "l'utilisateur demande d'ajouter, de créer ou de donner une tâche/corvée à quelqu'un."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "titre": {"type": "string", "description": "Le titre court de la tâche, par exemple Vaisselle ou Ménage"},
+                    "personne": {"type": "string", "description": "Le prénom exact du membre de la famille à qui assigner la tâche"}
+                },
+                "required": ["titre", "personne"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cocher_tache",
+            "description": (
+                "Marque une tâche EXISTANTE comme faite/terminée, sans la supprimer : elle reste "
+                "visible dans la liste mais cochée. À utiliser quand l'utilisateur dit qu'une tâche "
+                "est faite, terminée, ou demande de la cocher/valider."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "titre": {"type": "string", "description": "Le titre (ou un extrait) de la tâche à cocher comme faite"},
+                    "personne": {"type": "string", "description": "Prénom du membre concerné UNIQUEMENT si l'utilisateur l'a explicitement mentionné dans sa phrase. Ne jamais deviner ou inventer un prénom : omettre entièrement ce champ si aucun prénom n'est donné."}
+                },
+                "required": ["titre"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "supprimer_tache",
+            "description": (
+                "Supprime DÉFINITIVEMENT une tâche existante de la liste, elle disparaît complètement. "
+                "À utiliser UNIQUEMENT quand l'utilisateur demande explicitement de supprimer, enlever "
+                "ou effacer une tâche — jamais juste parce qu'elle est terminée (dans ce cas : cocher_tache)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "titre": {"type": "string", "description": "Le titre (ou un extrait) de la tâche à supprimer"},
+                    "personne": {"type": "string", "description": "Prénom du membre concerné UNIQUEMENT si l'utilisateur l'a explicitement mentionné dans sa phrase. Ne jamais deviner ou inventer un prénom : omettre entièrement ce champ si aucun prénom n'est donné."}
+                },
+                "required": ["titre"]
+            }
+        }
+    }
+]
+
+
+# Modèle représentant le message envoyé à l'assistant IA
+class AssistantRequest(SQLModel):
+    message: str
+
+
+# Mots indiquant une demande de gestion de profils/comptes/liens de parenté : entièrement hors du
+# périmètre de l'assistant (seules les tâches le sont). On refuse nous-mêmes ces demandes, sans même
+# appeler le modèle : un petit modèle local confond facilement "ajouter un lien/profil" avec
+# "ajouter une tâche" (même verbe "ajouter"), donc on ne peut pas compter sur lui pour ce refus.
+MOTS_HORS_PERIMETRE = ["lien de parenté", "lien parenté", "profil", "compte", "nouveau membre", "membre de la famille"]
+
+
+def est_hors_perimetre(message: str) -> bool:
+    message_lower = message.lower()
+    return any(mot in message_lower for mot in MOTS_HORS_PERIMETRE)
+
+
+# Cherche, dans le texte brut du message, un mot de lien (ex. "fille") partagé par plusieurs
+# membres de la famille (ex. "Léa" et "Emma" sont toutes les deux "Fille"). On fait ce contrôle
+# nous-mêmes, côté back-end, plutôt que de laisser le modèle deviner qui est visé.
+def trouver_lien_ambigu(message: str, membres: list["Member"]) -> Optional[list["Member"]]:
+    groupes_par_lien: dict[str, list[Member]] = {}
+    for membre in membres:
+        cle = membre.lien.strip().lower()
+        groupes_par_lien.setdefault(cle, []).append(membre)
+
+    message_lower = message.lower()
+    for lien, groupe in groupes_par_lien.items():
+        if len(groupe) < 2:
+            continue  # Un seul membre avec ce lien : pas d'ambiguïté possible
+
+        pluriel = lien if lien.endswith("s") else lien + "s"
+        motif = r"\b(" + re.escape(lien) + r"|" + re.escape(pluriel) + r")\b"
+        if re.search(motif, message_lower):
+            return groupe
+
+    return None
+
+
+# Cherche, parmi les tâches de la famille, celle(s) dont le titre contient `titre` (insensible à la
+# casse), optionnellement restreint à un membre précis. Utilisé par cocher_tache et supprimer_tache.
+# Renvoie (tâche, None) si une seule tâche correspond, ou (None, message) avec un message prêt à
+# renvoyer tel quel si la recherche ne peut pas aboutir (aucune ou plusieurs tâches trouvées) :
+# on ne devine jamais laquelle cocher/supprimer en cas d'ambiguïté.
+def trouver_tache_unique(
+    session: Session, family_code: str, titre: str, personne: Optional[str]
+) -> tuple[Optional[Task], Optional[str]]:
+    query = select(Task).where(Task.family_code == family_code, Task.title.ilike(f"%{titre.strip()}%"))
+
+    if personne:
+        membre = session.exec(
+            select(Member).where(Member.family_code == family_code, Member.name.ilike(personne))
+        ).first()
+        # Un petit modèle local invente parfois un prénom que l'utilisateur n'a pas mentionné : s'il
+        # ne correspond à personne dans la famille, on l'ignore plutôt que d'échouer à tort, et on
+        # retombe sur une recherche par titre seul.
+        if membre:
+            query = query.where(Task.member_id == membre.id)
+
+    taches = session.exec(query).all()
+
+    if not taches:
+        return None, f"Je n'ai pas trouvé de tâche correspondant à « {titre} »."
+
+    if len(taches) > 1:
+        titres = ", ".join(f"« {t.title} »" for t in taches)
+        return None, f"Plusieurs tâches correspondent : {titres}. Peux-tu préciser laquelle ?"
+
+    return taches[0], None
+
+
+# POST /api/assistant : relaie un message au modèle local (Ollama) ; si le modèle répond par un
+# appel à l'outil ajouter_tache/cocher_tache/supprimer_tache, l'action est réellement faite en base
+@app.post("/api/assistant")
+async def ask_assistant(
+    data: AssistantRequest,
+    current_member: Member = Depends(get_current_member),
+    session: Session = Depends(get_session)
+):
+    # Contrôle sur le message brut, avant même d'appeler le modèle : gestion de profils/comptes/liens
+    # de parenté, entièrement hors du périmètre de l'assistant (seules les tâches le sont).
+    if est_hors_perimetre(data.message):
+        return {
+            "reply": (
+                "Désolé, je ne peux gérer que les tâches (ajouter, cocher, supprimer). "
+                "Pour les membres ou les liens de parenté, direction l'onglet Famille !"
+            )
+        }
+
+    # Contrôle sur le message brut, avant même d'appeler le modèle : si plusieurs membres
+    # partagent le lien évoqué (ex. "ma fille" avec deux filles), on ne devine pas.
+    membres_famille = session.exec(select(Member).where(Member.family_code == current_member.family_code)).all()
+    groupe_ambigu = trouver_lien_ambigu(data.message, membres_famille)
+    if groupe_ambigu:
+        lien_pluriel = groupe_ambigu[0].lien.strip().lower()
+        lien_pluriel = lien_pluriel if lien_pluriel.endswith("s") else lien_pluriel + "s"
+        noms = ", ".join(membre.name for membre in groupe_ambigu)
+        return {"reply": f"Il y a plusieurs {lien_pluriel} ({noms}). Pour qui ?"}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": [
+                        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
+                        {"role": "user", "content": data.message}
+                    ],
+                    "tools": ASSISTANT_TOOLS,
+                    # Température à 0 : rend le choix outil-vs-texte plus déterministe, ce qui compte
+                    # beaucoup pour la fiabilité du tool-calling sur un petit modèle local
+                    "temperature": 0
+                },
+                # L'inférence tourne en local sur CPU : plus lente qu'une API cloud, d'où un délai généreux
+                timeout=60.0
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="Impossible de contacter l'assistant IA")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Erreur de l'assistant IA")
+
+    message = response.json()["choices"][0]["message"]
+
+    # Le modèle peut répondre par un texte normal, ou par une demande d'appel d'outil (tool_calls)
+    tool_calls = message.get("tool_calls")
+    if not tool_calls:
+        return {"reply": message["content"]}
+
+    # On ne traite que le premier appel d'outil demandé
+    function_call = tool_calls[0]["function"]
+    nom_outil = function_call.get("name")
+
+    # Les arguments arrivent sous forme de chaîne JSON (pas d'objet direct), il faut donc les décoder.
+    # Un petit modèle local peut mal formater ces arguments (clé manquante/renommée) : on reste
+    # défensif plutôt que de planter avec une erreur 500 non gérée.
+    try:
+        arguments = json.loads(function_call["arguments"])
+        titre = arguments["titre"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return {"reply": "Je n'ai pas bien compris de quelle tâche il s'agit, peux-tu reformuler ?"}
+
+    if nom_outil == "ajouter_tache":
+        try:
+            personne = arguments["personne"]
+        except KeyError:
+            return {"reply": "Je n'ai pas bien compris la tâche à créer, peux-tu reformuler ?"}
+
+        # On cherche le membre visé par son prénom (insensible à la casse, car le modèle
+        # ne reproduit pas forcément la casse exacte), dans la famille du membre connecté uniquement
+        membre_cible = session.exec(
+            select(Member).where(
+                Member.family_code == current_member.family_code,
+                Member.name.ilike(personne)
+            )
+        ).first()
+
+        if not membre_cible:
+            return {"reply": f"Je n'ai pas trouvé de membre nommé « {personne} » dans votre famille."}
+
+        # Même règle que pour la création manuelle de tâche : seul un admin peut assigner à un autre membre
+        if membre_cible.id != current_member.id and not current_member.is_admin:
+            raise HTTPException(status_code=403, detail="Seul un administrateur peut assigner une tâche à un autre membre")
+
+        task = Task(
+            title=titre,
+            member_id=membre_cible.id,
+            family_code=current_member.family_code
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+
+        return {"reply": f"Tâche « {titre} » ajoutée pour {membre_cible.name}."}
+
+    if nom_outil == "cocher_tache":
+        personne = arguments.get("personne")
+        tache, erreur = trouver_tache_unique(session, current_member.family_code, titre, personne)
+        if erreur:
+            return {"reply": erreur}
+
+        tache.done = True
+        session.add(tache)
+        session.commit()
+
+        return {"reply": f"Tâche « {tache.title} » cochée comme faite."}
+
+    if nom_outil == "supprimer_tache":
+        # Supprimer est irréversible : on applique la même règle que le bouton de suppression manuel,
+        # réservé aux administrateurs dans l'interface (le bouton n'est même pas affiché sinon)
+        if not current_member.is_admin:
+            return {"reply": "Seul un administrateur peut supprimer une tâche, désolé !"}
+
+        personne = arguments.get("personne")
+        tache, erreur = trouver_tache_unique(session, current_member.family_code, titre, personne)
+        if erreur:
+            return {"reply": erreur}
+
+        session.delete(tache)
+        session.commit()
+
+        return {"reply": f"Tâche « {tache.title} » supprimée."}
+
+    # Filet de sécurité : le modèle n'a que ces trois outils à sa disposition, mais on reste
+    # défensif au cas où il en invente un ou renvoie un nom inattendu
+    return {"reply": "Désolé, je ne peux pas faire ça pour le moment — je peux seulement ajouter, cocher ou supprimer une tâche."}
